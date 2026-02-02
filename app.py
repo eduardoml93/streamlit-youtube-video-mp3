@@ -7,7 +7,6 @@ import base64
 import time
 from pathlib import Path
 from googleapiclient.errors import HttpError
-import threading
 
 # Configuração da página
 st.set_page_config(
@@ -434,6 +433,83 @@ def main():
         st.session_state.download_type = None
     if 'download_title' not in st.session_state:
         st.session_state.download_title = None
+    if 'pending_download' not in st.session_state:
+        st.session_state.pending_download = None
+    
+    # Executar download pendente no thread principal (evita que st.rerun() em thread falhe)
+    if st.session_state.pending_download is not None:
+        job = st.session_state.pending_download
+        st.session_state.pending_download = None
+        st.session_state.is_downloading = True
+        st.session_state.download_type = job["type"]
+        st.session_state.download_title = job["title"]
+        
+        # Container de progresso: ícone/barra + texto de status
+        st.markdown("### ⏳ Progresso do download")
+        progress_bar = st.progress(0, text="Preparando...")
+        status_text = st.empty()
+        status_text.caption("Conectando e obtendo informações do vídeo...")
+        
+        def progress_hook(d):
+            """Callback do yt_dlp para atualizar barra e status em tempo real."""
+            status = d.get("status", "")
+            if status == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                downloaded = d.get("downloaded_bytes", 0)
+                if total and total > 0:
+                    pct = min(1.0, downloaded / total)
+                    progress_bar.progress(pct, text=f"Baixando... {pct*100:.1f}%")
+                    # Formatar tamanho e velocidade
+                    mb_d = downloaded / (1024 * 1024)
+                    mb_t = total / (1024 * 1024)
+                    speed = d.get("speed")
+                    eta = d.get("eta")
+                    speed_str = f" | {speed/1024/1024:.1f} MB/s" if speed else ""
+                    eta_str = f" | ETA: {eta}s" if eta is not None else ""
+                    status_text.caption(f"📥 {mb_d:.1f} / {mb_t:.1f} MB{speed_str}{eta_str}")
+                else:
+                    progress_bar.progress(0.5, text="Baixando...")
+                    status_text.caption(f"📥 {downloaded / (1024*1024):.1f} MB recebidos...")
+            elif status == "finished":
+                progress_bar.progress(1.0, text="Processando arquivo...")
+                status_text.caption("Convertendo / finalizando arquivo...")
+        
+        try:
+            if job["type"] == "video":
+                file_path, safe_title = download_video_hd(
+                    job["url"], job["title"],
+                    quality_option=job["quality_option"],
+                    callback=progress_hook
+                )
+            else:
+                file_path, safe_title = download_audio_hq(
+                    job["url"], job["title"],
+                    bitrate=job["bitrate"],
+                    callback=progress_hook
+                )
+            if file_path and os.path.exists(file_path):
+                progress_bar.progress(1.0, text="Concluído!")
+                status_text.caption("✅ Download finalizado.")
+                filename = os.path.basename(file_path)
+                qual = job.get("quality_label", "HD") if job["type"] == "video" else job.get("bitrate", "320") + "kbps"
+                st.session_state.downloads.append({
+                    "path": file_path,
+                    "filename": filename,
+                    "type": job["type"],
+                    "title": job["title"],
+                    "quality": qual,
+                })
+                st.session_state.download_count += 1
+                st.success("Download concluído! Role até a seção de downloads.")
+        except Exception as e:
+            progress_bar.progress(0, text="Erro")
+            status_text.caption("")
+            st.error(f"Erro no download: {str(e)}")
+        finally:
+            st.session_state.is_downloading = False
+            st.session_state.download_type = None
+            st.session_state.download_title = None
+        st.rerun()
     
     # Sidebar para configurações
     with st.sidebar:
@@ -586,99 +662,27 @@ def main():
                         
                         if st.button("📥 Vídeo HD", key=f"video_{video['video_id']}", 
                                     disabled=st.session_state.is_downloading,
-                                    width='stretch'):  # CORREÇÃO AQUI
-                            # Configurar estado de download
-                            st.session_state.is_downloading = True
-                            st.session_state.download_type = "video"
-                            st.session_state.download_title = video["title"]
+                                    width='stretch'):
+                            st.session_state.pending_download = {
+                                "url": video["url"],
+                                "title": video["title"],
+                                "type": "video",
+                                "quality_option": video_quality_option,
+                                "quality_label": video_quality,
+                            }
                             st.rerun()
-                            
-                            # Função de callback para progresso
-                            def progress_hook(d):
-                                if d['status'] == 'downloading':
-                                    pass  # Poderia atualizar uma barra de progresso aqui
-                            
-                            # Executar download em uma thread para não bloquear
-                            def download_thread():
-                                try:
-                                    file_path, safe_title = download_video_hd(
-                                        video["url"], 
-                                        video["title"],
-                                        quality_option=video_quality_option,
-                                        callback=progress_hook
-                                    )
-                                    if file_path and os.path.exists(file_path):
-                                        filename = os.path.basename(file_path)
-                                        st.session_state.downloads.append({
-                                            "path": file_path,
-                                            "filename": filename,
-                                            "type": "video",
-                                            "title": video["title"],
-                                            "quality": video_quality
-                                        })
-                                        st.session_state.download_count += 1
-                                        
-                                    # Resetar estado
-                                    st.session_state.is_downloading = False
-                                    st.session_state.download_type = None
-                                    st.session_state.download_title = None
-                                    st.rerun()
-                                    
-                                except Exception as e:
-                                    st.error(f"Erro: {str(e)}")
-                                    st.session_state.is_downloading = False
-                                    st.session_state.download_type = None
-                                    st.session_state.download_title = None
-                                    st.rerun()
-                            
-                            # Iniciar thread de download
-                            thread = threading.Thread(target=download_thread)
-                            thread.start()
                     
                     # Botão para baixar MP3 HQ
                     if st.button("🎵 MP3 HQ", key=f"audio_{video['video_id']}", 
                                 disabled=st.session_state.is_downloading,
-                                width='stretch'):  # CORREÇÃO AQUI
-                        # Configurar estado de download
-                        st.session_state.is_downloading = True
-                        st.session_state.download_type = "audio"
-                        st.session_state.download_title = video["title"]
+                                width='stretch'):
+                        st.session_state.pending_download = {
+                            "url": video["url"],
+                            "title": video["title"],
+                            "type": "audio",
+                            "bitrate": audio_bitrate,
+                        }
                         st.rerun()
-                        
-                        # Executar download em uma thread
-                        def download_audio_thread():
-                            try:
-                                file_path, safe_title = download_audio_hq(
-                                    video["url"], 
-                                    video["title"],
-                                    bitrate=audio_bitrate
-                                )
-                                if file_path and os.path.exists(file_path):
-                                    filename = os.path.basename(file_path)
-                                    st.session_state.downloads.append({
-                                        "path": file_path,
-                                        "filename": filename,
-                                        "type": "audio",
-                                        "title": video["title"],
-                                        "quality": f"{audio_bitrate}kbps"
-                                    })
-                                    st.session_state.download_count += 1
-                                
-                                # Resetar estado
-                                st.session_state.is_downloading = False
-                                st.session_state.download_type = None
-                                st.session_state.download_title = None
-                                st.rerun()
-                                
-                            except Exception as e:
-                                st.error(f"Erro: {str(e)}")
-                                st.session_state.is_downloading = False
-                                st.session_state.download_type = None
-                                st.session_state.download_title = None
-                                st.rerun()
-                        
-                        thread = threading.Thread(target=download_audio_thread)
-                        thread.start()
                     
                     # Botão para verificar qualidades disponíveis
                     if st.button("📊 Qualidades", key=f"quality_{video['video_id']}", 
