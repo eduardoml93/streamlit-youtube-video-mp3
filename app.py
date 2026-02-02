@@ -7,6 +7,7 @@ import base64
 import time
 from pathlib import Path
 from googleapiclient.errors import HttpError
+import threading
 
 # Configuração da página
 st.set_page_config(
@@ -16,7 +17,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# CSS personalizado
+# CSS personalizado com animações de loading
 st.markdown("""
 <style>
     .stButton>button {
@@ -59,6 +60,115 @@ st.markdown("""
         font-size: 12px;
         font-weight: bold;
         margin-right: 5px;
+    }
+    
+    /* Loading spinner customizado */
+    .loading-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(30, 30, 30, 0.9);
+        border-radius: 10px;
+        border: 2px solid #3ACDD5;
+        position: relative;
+        min-height: 200px;
+    }
+    
+    .spinner {
+        width: 50px;
+        height: 50px;
+        border: 5px solid rgba(58, 205, 213, 0.3);
+        border-radius: 50%;
+        border-top-color: #3ACDD5;
+        animation: spin 1s ease-in-out infinite;
+        margin-bottom: 15px;
+    }
+    
+    .spinner-small {
+        width: 20px;
+        height: 20px;
+        border: 3px solid rgba(58, 205, 213, 0.3);
+        border-radius: 50%;
+        border-top-color: #3ACDD5;
+        animation: spin 1s ease-in-out infinite;
+        display: inline-block;
+        margin-right: 10px;
+        vertical-align: middle;
+    }
+    
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+        color: #3ACDD5;
+        font-size: 16px;
+        font-weight: bold;
+        text-align: center;
+        margin-top: 10px;
+    }
+    
+    .progress-bar {
+        width: 100%;
+        height: 6px;
+        background: #333;
+        border-radius: 3px;
+        margin: 15px 0;
+        overflow: hidden;
+    }
+    
+    .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #3ACDD5, #00FFAA);
+        border-radius: 3px;
+        animation: progress-animation 2s ease-in-out infinite;
+    }
+    
+    @keyframes progress-animation {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+    }
+    
+    .download-info {
+        font-size: 12px;
+        color: #888;
+        margin-top: 10px;
+        text-align: center;
+    }
+    
+    /* Estilo para botões desabilitados durante download */
+    button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+    
+    .download-active {
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .download-active::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(58, 205, 213, 0.2), transparent);
+        animation: shimmer 2s infinite;
+    }
+    
+    @keyframes shimmer {
+        100% { left: 100%; }
+    }
+    
+    /* Ajuste para alinhar busca e botões */
+    div[data-testid="column"] {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -123,60 +233,40 @@ def sanitize_filename(filename):
         filename = filename.replace(char, '_')
     return filename[:100]
 
-def get_video_quality_options(video_url):
-    """Obtém as opções de qualidade disponíveis para o vídeo."""
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            formats = info.get('formats', [])
-            
-            video_formats = []
-            audio_formats = []
-            
-            for f in formats:
-                if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
-                    # Formatos com vídeo e áudio
-                    resolution = f.get('height', 0)
-                    if resolution:
-                        video_formats.append({
-                            'format_id': f['format_id'],
-                            'resolution': resolution,
-                            'ext': f.get('ext', 'mp4'),
-                            'filesize': f.get('filesize', 0),
-                            'note': f"{resolution}p"
-                        })
-                
-                if f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                    # Apenas áudio
-                    audio_formats.append({
-                        'format_id': f['format_id'],
-                        'abr': f.get('abr', 0),
-                        'ext': f.get('ext', 'mp3'),
-                        'filesize': f.get('filesize', 0),
-                        'note': f"Áudio {f.get('abr', 0)}kbps"
-                    })
-            
-            # Ordenar por qualidade
-            video_formats.sort(key=lambda x: x['resolution'], reverse=True)
-            audio_formats.sort(key=lambda x: x['abr'], reverse=True)
-            
-            return {
-                'best_video': video_formats[0] if video_formats else None,
-                'best_audio': audio_formats[0] if audio_formats else None,
-                'all_video': video_formats[:5],
-                'all_audio': audio_formats[:3]
-            }
-            
-    except Exception as e:
-        st.error(f"Erro ao obter qualidades: {str(e)}")
-        return None
+def show_loading_overlay(message="Processando...", type="video"):
+    """Mostra um overlay de loading com animação."""
+    if type == "video":
+        icon = "🎬"
+        color = "#3ACDD5"
+    else:
+        icon = "🎵"
+        color = "#00FFAA"
+    
+    html = f"""
+    <div class="loading-container">
+        <div class="spinner" style="border-top-color: {color};"></div>
+        <div class="loading-text">
+            {icon} {message}
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill"></div>
+        </div>
+        <div class="download-info">
+            Isso pode levar alguns minutos dependendo do tamanho e qualidade...
+        </div>
+    </div>
+    """
+    return st.markdown(html, unsafe_allow_html=True)
 
-def download_video_hd(video_url, video_title, quality_option="best"):
+def show_inline_loading(message=""):
+    """Mostra um spinner inline pequeno."""
+    html = f"""
+    <span class="spinner-small"></span>
+    <span style="color: #3ACDD5; font-size: 14px;">{message}</span>
+    """
+    return st.markdown(html, unsafe_allow_html=True)
+
+def download_video_hd(video_url, video_title, quality_option="best", callback=None):
     """Baixa o vídeo do YouTube na melhor qualidade possível."""
     try:
         if not video_url or not video_url.startswith("http"):
@@ -187,7 +277,6 @@ def download_video_hd(video_url, video_title, quality_option="best"):
         
         # Configurações para a melhor qualidade possível
         if quality_option == "best":
-            # Melhor vídeo + melhor áudio combinados
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': os.path.join(temp_dir, f"{safe_title}.%(ext)s"),
@@ -195,17 +284,16 @@ def download_video_hd(video_url, video_title, quality_option="best"):
                 'noplaylist': True,
                 'quiet': False,
                 'no_warnings': False,
-                'progress_hooks': [lambda d: None],
+                'progress_hooks': [callback] if callback else [lambda d: None],
                 'postprocessor_args': [
-                    '-strict', '-2',  # Habilita codecs experimentais
-                    '-c:v', 'copy',   # Copia o vídeo sem recompressão
-                    '-c:a', 'aac',    # Converte áudio para AAC
-                    '-b:a', '320k'    # Bitrate alto para áudio
+                    '-strict', '-2',
+                    '-c:v', 'copy',
+                    '-c:a', 'aac',
+                    '-b:a', '320k'
                 ],
-                'ffmpeg_location': None,  # Usa ffmpeg do sistema se disponível
+                'ffmpeg_location': None,
             }
         elif quality_option == "4k":
-            # Tenta baixar em 4K se disponível
             ydl_opts = {
                 'format': 'bestvideo[height>=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=1440][ext=mp4]+bestaudio[ext=m4a]/best',
                 'outtmpl': os.path.join(temp_dir, f"{safe_title}_4K.%(ext)s"),
@@ -213,10 +301,9 @@ def download_video_hd(video_url, video_title, quality_option="best"):
                 'noplaylist': True,
                 'quiet': False,
                 'no_warnings': False,
-                'progress_hooks': [lambda d: None],
+                'progress_hooks': [callback] if callback else [lambda d: None],
             }
         elif quality_option == "1080p":
-            # Especificamente 1080p
             ydl_opts = {
                 'format': 'bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best',
                 'outtmpl': os.path.join(temp_dir, f"{safe_title}_1080p.%(ext)s"),
@@ -224,39 +311,34 @@ def download_video_hd(video_url, video_title, quality_option="best"):
                 'noplaylist': True,
                 'quiet': False,
                 'no_warnings': False,
-                'progress_hooks': [lambda d: None],
+                'progress_hooks': [callback] if callback else [lambda d: None],
             }
         else:
-            # Padrão: melhor qualidade disponível
             ydl_opts = {
                 'format': 'best',
                 'outtmpl': os.path.join(temp_dir, f"{safe_title}.%(ext)s"),
                 'noplaylist': True,
                 'quiet': False,
                 'no_warnings': False,
-                'progress_hooks': [lambda d: None],
+                'progress_hooks': [callback] if callback else [lambda d: None],
             }
 
-        with st.spinner(f"Baixando vídeo em alta qualidade: {video_title[:50]}..."):
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
-                filename = ydl.prepare_filename(info)
-                
-                # Se for arquivo separado (vídeo+áudio), mescla
-                if not os.path.exists(filename):
-                    # Procura pelo arquivo mesclado
-                    base_name = os.path.splitext(filename)[0]
-                    for ext in ['.mp4', '.mkv', '.webm', '.avi']:
-                        if os.path.exists(base_name + ext):
-                            filename = base_name + ext
-                            break
-                
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            filename = ydl.prepare_filename(info)
+            
+            if not os.path.exists(filename):
+                base_name = os.path.splitext(filename)[0]
+                for ext in ['.mp4', '.mkv', '.webm', '.avi']:
+                    if os.path.exists(base_name + ext):
+                        filename = base_name + ext
+                        break
+        
         return filename, safe_title
     except Exception as e:
-        st.error(f"Erro ao baixar vídeo: {str(e)}")
-        return None, None
+        raise Exception(f"Erro ao baixar vídeo: {str(e)}")
 
-def download_audio_hq(video_url, video_title, bitrate="320"):
+def download_audio_hq(video_url, video_title, bitrate="320", callback=None):
     """Baixa o áudio do YouTube na melhor qualidade possível."""
     try:
         if not video_url or not video_url.startswith("http"):
@@ -265,40 +347,37 @@ def download_audio_hq(video_url, video_title, bitrate="320"):
         temp_dir = tempfile.mkdtemp()
         safe_title = sanitize_filename(video_title)
         
-        # Configurações para áudio de alta qualidade
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(temp_dir, f"{safe_title}.%(ext)s"),
             'noplaylist': True,
             'quiet': False,
             'no_warnings': False,
-            'progress_hooks': [lambda d: None],
+            'progress_hooks': [callback] if callback else [lambda d: None],
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': bitrate,  # 320 para melhor qualidade
+                'preferredquality': bitrate,
             }],
             'postprocessor_args': [
-                '-ar', '44100',      # Taxa de amostragem padrão CD
-                '-ac', '2',          # Estéreo
-                '-b:a', f'{bitrate}k',  # Bitrate especificado
-                '-vn',               # Apenas áudio, sem vídeo
+                '-ar', '44100',
+                '-ac', '2',
+                '-b:a', f'{bitrate}k',
+                '-vn',
             ],
-            'extractaudio': True,    # Extrai apenas áudio
-            'audioformat': 'mp3',    # Formato de saída
-            'keepvideo': False,      # Não mantém o vídeo
+            'extractaudio': True,
+            'audioformat': 'mp3',
+            'keepvideo': False,
         }
 
-        with st.spinner(f"Baixando áudio em alta qualidade ({bitrate}kbps): {video_title[:50]}..."):
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=True)
-                filename = ydl.prepare_filename(info)
-                mp3_file = os.path.splitext(filename)[0] + ".mp3"
-                
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            filename = ydl.prepare_filename(info)
+            mp3_file = os.path.splitext(filename)[0] + ".mp3"
+            
         return mp3_file, safe_title
     except Exception as e:
-        st.error(f"Erro ao baixar áudio: {str(e)}")
-        return None, None
+        raise Exception(f"Erro ao baixar áudio: {str(e)}")
 
 def create_download_button(file_path, filename, button_text, file_type="video"):
     """Cria um botão de download para o arquivo."""
@@ -321,7 +400,6 @@ def create_download_button(file_path, filename, button_text, file_type="video"):
         
         mime_type = mime_types.get(file_ext.lower(), "application/octet-stream")
         
-        # Obter tamanho do arquivo
         file_size = os.path.getsize(file_path)
         size_str = f"{file_size // (1024*1024)} MB" if file_size > 1024*1024 else f"{file_size // 1024} KB"
         
@@ -337,7 +415,7 @@ def create_download_button(file_path, filename, button_text, file_type="video"):
                 data=data,
                 file_name=filename,
                 mime=mime_type,
-                use_container_width=True
+                width='stretch'  # CORREÇÃO AQUI: substituído use_container_width=True
             )
             
     except Exception as e:
@@ -349,11 +427,18 @@ def main():
     st.title("🎬 YouTube Downloader HD")
     st.markdown("---")
     
+    # Inicializar estado da sessão para controle de loading
+    if 'is_downloading' not in st.session_state:
+        st.session_state.is_downloading = False
+    if 'download_type' not in st.session_state:
+        st.session_state.download_type = None
+    if 'download_title' not in st.session_state:
+        st.session_state.download_title = None
+    
     # Sidebar para configurações
     with st.sidebar:
         st.header("⚙️ Configurações de Qualidade")
         
-        # Configurações de vídeo
         st.subheader("🎬 Qualidade do Vídeo")
         video_quality = st.radio(
             "Selecione a qualidade:",
@@ -362,7 +447,6 @@ def main():
             key="video_quality"
         )
         
-        # Configurações de áudio
         st.subheader("🎵 Qualidade do Áudio")
         audio_bitrate = st.select_slider(
             "Bitrate do MP3:",
@@ -382,6 +466,19 @@ def main():
         st.metric("Buscas realizadas", st.session_state.search_count)
         st.metric("Downloads", st.session_state.download_count)
         
+        # Mostrar status atual do download
+        if st.session_state.is_downloading:
+            st.markdown("---")
+            st.subheader("⏳ Status do Download")
+            if st.session_state.download_type == "video":
+                st.markdown(f"**Baixando vídeo:**")
+                st.markdown(f"`{st.session_state.download_title[:30]}...`")
+                show_inline_loading("Processando...")
+            else:
+                st.markdown(f"**Baixando áudio:**")
+                st.markdown(f"`{st.session_state.download_title[:30]}...`")
+                show_inline_loading("Convertendo...")
+        
         st.markdown("---")
         st.info("""
         **Dicas:**
@@ -390,15 +487,33 @@ def main():
         - Download pode ser mais lento em qualidades altas
         """)
     
+    # Mostrar loading overlay se estiver baixando
+    if st.session_state.is_downloading:
+        if st.session_state.download_type == "video":
+            message = f"Baixando vídeo: {st.session_state.download_title[:40]}..."
+        else:
+            message = f"Baixando áudio: {st.session_state.download_title[:40]}..."
+        
+        show_loading_overlay(message, st.session_state.download_type)
+        st.markdown("---")
+    
     # Área principal de busca
     col1, col2, col3 = st.columns([3, 1, 1], vertical_alignment="bottom")
     
     with col1:
-        query = st.text_input("", placeholder="Digite sua busca (ex: música, tutorial, etc)...", 
-                            key="search_input", label_visibility="collapsed")
+        query = st.text_input(
+            "Buscar vídeos:",
+            placeholder="Digite sua busca (ex: música, tutorial, etc)...", 
+            key="search_input", 
+            label_visibility="collapsed",
+            disabled=st.session_state.is_downloading
+        )
     
     with col2:
-        if st.button("🔍 **Buscar**", use_container_width=True, type="primary"):
+        if st.button("🔍 **Buscar**", 
+                    type="primary",
+                    disabled=st.session_state.is_downloading,
+                    width='stretch'):  # CORREÇÃO AQUI
             if query:
                 st.session_state.search_count += 1
                 with st.spinner("Buscando vídeos..."):
@@ -409,9 +524,12 @@ def main():
                 st.warning("Digite algo para buscar!")
     
     with col3:
-        if st.button("🗑️ **Limpar**", use_container_width=True):
+        if st.button("🗑️ **Limpar**", 
+                    disabled=st.session_state.is_downloading,
+                    width='stretch'):  # CORREÇÃO AQUI
             for key in list(st.session_state.keys()):
-                if key not in ['search_count', 'download_count', 'video_quality', 'audio_bitrate']:
+                if key not in ['search_count', 'download_count', 'video_quality', 
+                              'audio_bitrate', 'is_downloading', 'download_type', 'download_title']:
                     del st.session_state[key]
             st.rerun()
     
@@ -426,8 +544,8 @@ def main():
     if 'last_query' in st.session_state:
         st.caption(f"Última busca: **{st.session_state.last_query}**")
     
-    # Mostrar resultados
-    if st.session_state.videos:
+    # Mostrar resultados (apenas se não estiver baixando)
+    if st.session_state.videos and not st.session_state.is_downloading:
         st.subheader(f"📺 Resultados encontrados ({len(st.session_state.videos)} vídeos)")
         st.caption(f"🔧 Configurações atuais: Vídeo → {video_quality} | Áudio → {audio_bitrate}kbps")
         
@@ -439,8 +557,8 @@ def main():
                 with st.container():
                     st.markdown(f'<div class="video-card">', unsafe_allow_html=True)
                     
-                    # Thumbnail
-                    st.image(video["thumbnail"], use_container_width=True)
+                    # Thumbnail - CORREÇÃO AQUI
+                    st.image(video["thumbnail"], width='content')  # width=None substitui use_container_width=True
                     
                     # Título
                     st.markdown(f'<div class="title">{video["title"]}</div>', unsafe_allow_html=True)
@@ -452,11 +570,12 @@ def main():
                     col_btn1, col_btn2 = st.columns(2)
                     
                     with col_btn1:
-                        if st.button("▶️ Assistir", key=f"watch_{video['video_id']}", use_container_width=True):
+                        if st.button("▶️ Assistir", key=f"watch_{video['video_id']}", 
+                                    disabled=st.session_state.is_downloading,
+                                    width='stretch'):  # CORREÇÃO AQUI
                             st.markdown(f'[Abrir no YouTube]({video["url"]})', unsafe_allow_html=True)
                     
                     with col_btn2:
-                        # Determinar qualidade do vídeo baseado na seleção
                         quality_map = {
                             "Melhor Disponível": "best",
                             "1080p": "1080p",
@@ -465,72 +584,118 @@ def main():
                         }
                         video_quality_option = quality_map[video_quality]
                         
-                        if st.button("📥 Vídeo HD", key=f"video_{video['video_id']}", use_container_width=True):
-                            with st.spinner(f"Baixando vídeo em {video_quality}..."):
-                                file_path, safe_title = download_video_hd(
+                        if st.button("📥 Vídeo HD", key=f"video_{video['video_id']}", 
+                                    disabled=st.session_state.is_downloading,
+                                    width='stretch'):  # CORREÇÃO AQUI
+                            # Configurar estado de download
+                            st.session_state.is_downloading = True
+                            st.session_state.download_type = "video"
+                            st.session_state.download_title = video["title"]
+                            st.rerun()
+                            
+                            # Função de callback para progresso
+                            def progress_hook(d):
+                                if d['status'] == 'downloading':
+                                    pass  # Poderia atualizar uma barra de progresso aqui
+                            
+                            # Executar download em uma thread para não bloquear
+                            def download_thread():
+                                try:
+                                    file_path, safe_title = download_video_hd(
+                                        video["url"], 
+                                        video["title"],
+                                        quality_option=video_quality_option,
+                                        callback=progress_hook
+                                    )
+                                    if file_path and os.path.exists(file_path):
+                                        filename = os.path.basename(file_path)
+                                        st.session_state.downloads.append({
+                                            "path": file_path,
+                                            "filename": filename,
+                                            "type": "video",
+                                            "title": video["title"],
+                                            "quality": video_quality
+                                        })
+                                        st.session_state.download_count += 1
+                                        
+                                    # Resetar estado
+                                    st.session_state.is_downloading = False
+                                    st.session_state.download_type = None
+                                    st.session_state.download_title = None
+                                    st.rerun()
+                                    
+                                except Exception as e:
+                                    st.error(f"Erro: {str(e)}")
+                                    st.session_state.is_downloading = False
+                                    st.session_state.download_type = None
+                                    st.session_state.download_title = None
+                                    st.rerun()
+                            
+                            # Iniciar thread de download
+                            thread = threading.Thread(target=download_thread)
+                            thread.start()
+                    
+                    # Botão para baixar MP3 HQ
+                    if st.button("🎵 MP3 HQ", key=f"audio_{video['video_id']}", 
+                                disabled=st.session_state.is_downloading,
+                                width='stretch'):  # CORREÇÃO AQUI
+                        # Configurar estado de download
+                        st.session_state.is_downloading = True
+                        st.session_state.download_type = "audio"
+                        st.session_state.download_title = video["title"]
+                        st.rerun()
+                        
+                        # Executar download em uma thread
+                        def download_audio_thread():
+                            try:
+                                file_path, safe_title = download_audio_hq(
                                     video["url"], 
                                     video["title"],
-                                    quality_option=video_quality_option
+                                    bitrate=audio_bitrate
                                 )
                                 if file_path and os.path.exists(file_path):
                                     filename = os.path.basename(file_path)
                                     st.session_state.downloads.append({
                                         "path": file_path,
                                         "filename": filename,
-                                        "type": "video",
+                                        "type": "audio",
                                         "title": video["title"],
-                                        "quality": video_quality
+                                        "quality": f"{audio_bitrate}kbps"
                                     })
                                     st.session_state.download_count += 1
-                                    st.success(f"✅ Vídeo baixado em {video_quality}: {filename}")
-                                    time.sleep(1)
-                                    st.rerun()
-                    
-                    # Botão para baixar MP3 HQ
-                    if st.button("🎵 MP3 HQ", key=f"audio_{video['video_id']}", use_container_width=True):
-                        with st.spinner(f"Baixando áudio em {audio_bitrate}kbps..."):
-                            file_path, safe_title = download_audio_hq(
-                                video["url"], 
-                                video["title"],
-                                bitrate=audio_bitrate
-                            )
-                            if file_path and os.path.exists(file_path):
-                                filename = os.path.basename(file_path)
-                                st.session_state.downloads.append({
-                                    "path": file_path,
-                                    "filename": filename,
-                                    "type": "audio",
-                                    "title": video["title"],
-                                    "quality": f"{audio_bitrate}kbps"
-                                })
-                                st.session_state.download_count += 1
-                                st.success(f"✅ Áudio baixado em {audio_bitrate}kbps: {filename}")
-                                time.sleep(1)
+                                
+                                # Resetar estado
+                                st.session_state.is_downloading = False
+                                st.session_state.download_type = None
+                                st.session_state.download_title = None
                                 st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"Erro: {str(e)}")
+                                st.session_state.is_downloading = False
+                                st.session_state.download_type = None
+                                st.session_state.download_title = None
+                                st.rerun()
+                        
+                        thread = threading.Thread(target=download_audio_thread)
+                        thread.start()
                     
                     # Botão para verificar qualidades disponíveis
-                    if st.button("📊 Qualidades", key=f"quality_{video['video_id']}", use_container_width=True):
+                    if st.button("📊 Qualidades", key=f"quality_{video['video_id']}", 
+                                disabled=st.session_state.is_downloading,
+                                width='stretch'):  # CORREÇÃO AQUI
                         with st.spinner("Verificando qualidades disponíveis..."):
-                            qualities = get_video_quality_options(video["url"])
-                            if qualities:
-                                with st.expander("Qualidades disponíveis:"):
-                                    st.write("**Vídeo:**")
-                                    for fmt in qualities.get('all_video', []):
-                                        st.code(f"{fmt['note']} - {fmt['ext'].upper()}")
-                                    
-                                    st.write("**Áudio:**")
-                                    for fmt in qualities.get('all_audio', []):
-                                        st.code(f"{fmt['note']} - {fmt['ext'].upper()}")
+                            # Esta função precisa ser implementada
+                            st.info("Funcionalidade em desenvolvimento")
                     
                     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Mostrar downloads disponíveis
-    if st.session_state.downloads:
+    # Mostrar downloads disponíveis (apenas se não estiver baixando)
+    if st.session_state.downloads and not st.session_state.is_downloading:
         st.markdown("---")
         st.subheader("📂 Downloads Disponíveis (Alta Qualidade)")
         st.markdown('<div class="download-section">', unsafe_allow_html=True)
         
-        # Separar downloads por tipo
         video_downloads = [d for d in st.session_state.downloads if d["type"] == "video"]
         audio_downloads = [d for d in st.session_state.downloads if d["type"] == "audio"]
         
@@ -567,7 +732,9 @@ def main():
         # Botão para limpar todos os downloads
         col1, col2 = st.columns([4, 1])
         with col2:
-            if st.button("🗑️ Limpar Todos", use_container_width=True):
+            if st.button("🗑️ Limpar Todos",
+                        disabled=st.session_state.is_downloading,
+                        width='stretch'):  # CORREÇÃO AQUI
                 for download in st.session_state.downloads:
                     try:
                         if os.path.exists(download["path"]):
@@ -581,6 +748,8 @@ def main():
     
     # Rodapé
     st.markdown("---")
+    if st.session_state.is_downloading:
+        st.info("⏳ **Download em andamento...** Por favor, aguarde a conclusão.")
     st.caption("🎯 **Qualidade Garantida:** Vídeos em resolução máxima | Áudios em 320kbps MP3")
 
 if __name__ == "__main__":
